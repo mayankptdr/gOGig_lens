@@ -27,7 +27,7 @@ def test_valid_image_upload(client, valid_image_bytes):
 
     assert data["processing_id"]
     assert data["status"] == "pending"
-    assert "message" in data
+    assert data["message"]
 
 
 def test_upload_persists_database_record(
