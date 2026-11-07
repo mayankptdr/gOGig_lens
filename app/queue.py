@@ -1,6 +1,6 @@
 
 from redis import Redis
-from rq import Queue, Retry
+from rq import Queue
 
 from app.config import settings
 
@@ -18,17 +18,20 @@ image_queue = Queue(
 )
 
 
-def enqueue_image(image_id: str):
+def enqueue_image(image_id: str, delay: int = 0):
     from app.worker import process_image
 
-    return image_queue.enqueue(
+    return image_queue.enqueue_in(
+        __import__("datetime").timedelta(seconds=delay),
         process_image,
         image_id,
         job_timeout=settings.job_timeout_seconds,
-        retry=Retry(
-            max=max(0, settings.max_attempts - 1),
-            interval=[10, 30],
-        ),
+        result_ttl=86400,
+        failure_ttl=604800,
+    ) if delay > 0 else image_queue.enqueue(
+        process_image,
+        image_id,
+        job_timeout=settings.job_timeout_seconds,
         result_ttl=86400,
         failure_ttl=604800,
     )
