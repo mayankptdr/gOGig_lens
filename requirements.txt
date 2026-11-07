@@ -21,3 +21,5 @@ streamlit==1.45.1
 requests==2.32.3
 
 alembic==1.15.2
+
+rapidocr-onnxruntime==1.4.4

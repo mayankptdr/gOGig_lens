@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from uuid import UUID
 import warnings
@@ -28,7 +27,7 @@ def save_upload(upload, image_id: str) -> tuple[str, int]:
     """
     try:
         safe_id = str(UUID(image_id))
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         raise ValueError("Invalid image ID")
 
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -37,8 +36,8 @@ def save_upload(upload, image_id: str) -> tuple[str, int]:
     file_size = 0
 
     try:
-        # 1. Stream the file in chunks instead of loading it into RAM.
-        with temp_path.open("wb") as destination:
+        # Stream in chunks and enforce the actual file-size limit.
+        with temp_path.open("xb") as destination:
             while True:
                 chunk = upload.file.read(CHUNK_SIZE)
 
@@ -55,16 +54,22 @@ def save_upload(upload, image_id: str) -> tuple[str, int]:
         if file_size == 0:
             raise UploadRejected("empty_file", 400)
 
-        # 2. Inspect the actual image format and dimensions.
+        # Inspect actual image content, not the supplied filename or MIME type.
         with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            warnings.simplefilter(
+                "error",
+                Image.DecompressionBombWarning,
+            )
 
             try:
                 with Image.open(temp_path) as image:
                     image_format = image.format
 
                     if image_format not in FORMAT_EXTENSIONS:
-                        raise UploadRejected("unsupported_format", 415)
+                        raise UploadRejected(
+                            "unsupported_format",
+                            415,
+                        )
 
                     width, height = image.size
 
@@ -72,13 +77,17 @@ def save_upload(upload, image_id: str) -> tuple[str, int]:
                         raise UploadRejected("invalid_image", 400)
 
                     if width * height > settings.max_image_pixels:
-                        raise UploadRejected("image_too_large_pixels", 413)
+                        raise UploadRejected(
+                            "image_too_large_pixels",
+                            413,
+                        )
 
-                    # 3. Decode the actual image to detect truncation/corruption.
+                    # Force decoding to detect truncated/corrupt images.
                     image.load()
 
             except UploadRejected:
                 raise
+
             except (
                 UnidentifiedImageError,
                 Image.DecompressionBombError,
@@ -88,12 +97,11 @@ def save_upload(upload, image_id: str) -> tuple[str, int]:
             ):
                 raise UploadRejected("invalid_image", 400)
 
-        # 4. Derive extension from the detected image format, not filename.
         extension = FORMAT_EXTENSIONS[image_format]
         storage_key = f"{safe_id}{extension}"
         final_path = settings.upload_dir / storage_key
 
-        # 5. Atomic move from temporary to final storage.
+        # Atomic move after validation.
         temp_path.replace(final_path)
 
         return storage_key, file_size
@@ -105,7 +113,12 @@ def save_upload(upload, image_id: str) -> tuple[str, int]:
 
 def get_storage_path(storage_key: str) -> Path:
     """Resolve a storage key safely inside the upload directory."""
-    if not storage_key or Path(storage_key).name != storage_key:
+    if (
+        not storage_key
+        or Path(storage_key).name != storage_key
+        or "/" in storage_key
+        or "\\" in storage_key
+    ):
         raise ValueError("Invalid storage key")
 
     base_dir = settings.upload_dir.resolve()

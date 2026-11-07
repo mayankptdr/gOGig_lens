@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 
@@ -20,6 +19,14 @@ class Settings:
 
     max_upload_bytes = int(
         os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    )
+
+    # Allows multipart boundaries and headers in addition to the file.
+    max_request_body_bytes = int(
+        os.getenv(
+            "MAX_REQUEST_BODY_BYTES",
+            str(max_upload_bytes + 1024 * 1024),
+        )
     )
 
     max_image_pixels = int(

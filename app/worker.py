@@ -19,12 +19,79 @@ DUPLICATE_DISTANCE_THRESHOLD = 5
 
 
 def _hamming_distance(left: str, right: str) -> int:
+    """Calculate the Hamming distance between two perceptual hashes."""
     if len(left) != len(right):
         return max(len(left), len(right))
+
     return sum(a != b for a, b in zip(left, right))
 
 
+def _refresh_summary(result: dict) -> None:
+    """
+    Recalculate every summary metric from the actual check statuses.
+
+    Keeps the current analyzer keys and backward-compatible aliases
+    synchronized.
+    """
+    checks = result.get("checks", {})
+
+    passed = [
+        name
+        for name, check in checks.items()
+        if check.get("status") == "pass"
+    ]
+
+    failed = [
+        name
+        for name, check in checks.items()
+        if check.get("status") == "fail"
+    ]
+
+    skipped = [
+        name
+        for name, check in checks.items()
+        if check.get("status") == "skipped"
+    ]
+
+    unknown = [
+        name
+        for name, check in checks.items()
+        if check.get("status") == "unknown"
+    ]
+
+    total = len(checks)
+    evaluated = len(passed) + len(failed)
+
+    confidence = (
+        round(len(passed) / evaluated, 4)
+        if evaluated > 0
+        else 0.0
+    )
+
+    result["summary"] = {
+        "checks_passed": len(passed),
+        "checks_failed": len(failed),
+        "checks_skipped": len(skipped),
+        "checks_unknown": len(unknown),
+
+        "total_checks": total,
+        "evaluated_checks": evaluated,
+        "confidence": confidence,
+
+        "flagged_checks": failed,
+        "skipped_checks": skipped,
+        "unknown_checks": unknown,
+
+        # Backward-compatible aliases
+        "checks_total": total,
+        "checks_evaluated": evaluated,
+        "confidence_score": confidence,
+    }
+
+
 def _claim_job(db, image_id: str) -> int | None:
+    """Atomically claim a pending job."""
+
     result = db.execute(
         update(ImageRecord)
         .where(
@@ -47,16 +114,28 @@ def _claim_job(db, image_id: str) -> int | None:
         return None
 
     record = db.get(ImageRecord, image_id)
+
     return record.attempts if record else None
 
 
 def _compare_duplicates(db, image_id: str, result: dict) -> None:
-    fingerprint = result.get("checks", {}).get(
-        "duplicate_fingerprint", {}
+    """Compare the current perceptual hash with previous completed uploads."""
+
+    fingerprint = (
+        result.get("checks", {}).get("duplicate_fingerprint", {})
     )
+
     new_hash = fingerprint.get("phash")
 
     if not new_hash:
+        fingerprint.update({
+            "status": "skipped",
+            "passed": None,
+            "matches": [],
+            "message": "Duplicate fingerprint unavailable.",
+        })
+
+        _refresh_summary(result)
         return
 
     candidates = (
@@ -86,34 +165,21 @@ def _compare_duplicates(db, image_id: str, result: dict) -> None:
         ):
             matches.append(candidate.id)
 
-    was_passed = fingerprint.get("passed", True)
+    is_duplicate = bool(matches)
 
     fingerprint.update({
-        "passed": len(matches) == 0,
+        "status": "fail" if is_duplicate else "pass",
+        "passed": not is_duplicate,
         "matches": matches,
         "hamming_distance_threshold": DUPLICATE_DISTANCE_THRESHOLD,
         "message": (
-            "Perceptual hash compared with previously completed "
-            "uploads; near matches are flagged."
+            "Potential duplicate detected against previous uploads."
+            if is_duplicate
+            else "No near-duplicate found among previous completed uploads."
         ),
     })
 
-    if matches and was_passed:
-        summary = result.get("summary", {})
-        flagged = summary.setdefault("flagged_checks", [])
-
-        if "duplicate_fingerprint" not in flagged:
-            flagged.append("duplicate_fingerprint")
-            summary["checks_passed"] = max(
-                0, summary.get("checks_passed", 0) - 1
-            )
-
-        total = summary.get("checks_total", 0)
-
-        if total:
-            summary["confidence_score"] = round(
-                summary["checks_passed"] / total, 2
-            )
+    _refresh_summary(result)
 
 
 def _mark_failed(
@@ -123,6 +189,8 @@ def _mark_failed(
     message: str,
     allowed_statuses=("processing",),
 ) -> None:
+    """Mark a job as failed only if it is in an allowed state."""
+
     db.execute(
         update(ImageRecord)
         .where(
@@ -136,10 +204,13 @@ def _mark_failed(
             finished_at=datetime.now(timezone.utc),
         )
     )
+
     db.commit()
 
 
 def process_image(image_id: str):
+    """Process one image with atomic claiming and bounded retries."""
+
     db = SessionLocal()
     claimed = False
 
@@ -148,7 +219,10 @@ def process_image(image_id: str):
         attempt_number = _claim_job(db, image_id)
 
         if attempt_number is None:
-            logger.info("Job %s is already claimed or not pending.", image_id)
+            logger.info(
+                "Job %s is already claimed or not pending.",
+                image_id,
+            )
             return
 
         claimed = True
@@ -171,8 +245,8 @@ def process_image(image_id: str):
         # 4. Compare duplicate fingerprints.
         _compare_duplicates(db, image_id, analysis_result)
 
-        # 5. Save result.
-        result = db.execute(
+        # 5. Save analysis result.
+        save_result = db.execute(
             update(ImageRecord)
             .where(
                 ImageRecord.id == image_id,
@@ -189,14 +263,25 @@ def process_image(image_id: str):
 
         db.commit()
 
-        if result.rowcount == 1:
-            logger.info("Image processing completed: %s", image_id)
+        if save_result.rowcount == 1:
+            logger.info(
+                "Image processing completed: %s",
+                image_id,
+            )
+        else:
+            logger.warning(
+                "Image %s was no longer processing when result was saved.",
+                image_id,
+            )
 
     except Exception as exc:
         db.rollback()
 
         if not claimed:
-            logger.exception("Could not claim job %s.", image_id)
+            logger.exception(
+                "Could not claim job %s.",
+                image_id,
+            )
             raise
 
         # 6. Classify the error.
@@ -207,17 +292,23 @@ def process_image(image_id: str):
 
         elif isinstance(exc, FileNotFoundError):
             error_code = "file_missing"
-            error_message = "The stored image file could not be found."
+            error_message = (
+                "The stored image file could not be found."
+            )
             permanent_error = True
 
         elif isinstance(exc, ValueError):
             error_code = "decode_failed"
-            error_message = "The stored image could not be decoded."
+            error_message = (
+                "The stored image could not be decoded."
+            )
             permanent_error = True
 
         else:
             error_code = "analysis_error"
-            error_message = "Image processing encountered a temporary error."
+            error_message = (
+                "Image processing encountered a temporary error."
+            )
             permanent_error = False
 
         record = db.get(ImageRecord, image_id)
@@ -233,17 +324,21 @@ def process_image(image_id: str):
 
         if not should_retry:
             _mark_failed(
-                db, image_id, error_code, error_message
+                db,
+                image_id,
+                error_code,
+                error_message,
             )
+
             logger.error(
-                "Image %s failed permanently after %s attempts.",
+                "Image %s failed after %s attempts.",
                 image_id,
                 record.attempts,
             )
             return
 
-        # 7. Return job to pending.
-        db.execute(
+        # 7. Return job to pending before retry.
+        retry_update = db.execute(
             update(ImageRecord)
             .where(
                 ImageRecord.id == image_id,
@@ -256,13 +351,24 @@ def process_image(image_id: str):
                 finished_at=None,
             )
         )
+
         db.commit()
+
+        if retry_update.rowcount != 1:
+            logger.warning(
+                "Could not return job %s to pending for retry.",
+                image_id,
+            )
+            return
 
         retry_delay = 10 if record.attempts == 1 else 30
 
         # 8. Schedule the next attempt.
         try:
-            enqueue_image(image_id, delay=retry_delay)
+            enqueue_image(
+                image_id,
+                delay=retry_delay,
+            )
 
             logger.warning(
                 "Retry scheduled for %s. Attempt %s/%s.",
@@ -272,7 +378,10 @@ def process_image(image_id: str):
             )
 
         except Exception:
-            logger.exception("Retry enqueue failed for %s.", image_id)
+            logger.exception(
+                "Retry enqueue failed for %s.",
+                image_id,
+            )
 
             db.rollback()
 
@@ -295,6 +404,7 @@ def recover_stale_jobs() -> dict:
     A job is stale only after its configured execution timeout
     plus the additional grace period.
     """
+
     db = SessionLocal()
 
     now = datetime.now(timezone.utc)
@@ -330,6 +440,7 @@ def recover_stale_jobs() -> dict:
                     "The job will be retried."
                 )
                 record.finished_at = None
+
                 retry_ids.append(record.id)
 
             else:
@@ -340,12 +451,14 @@ def recover_stale_jobs() -> dict:
                     "after the maximum number of attempts."
                 )
                 record.finished_at = now
+
                 failed_count += 1
 
         db.commit()
 
         scheduled_count = 0
 
+        # Schedule recovered jobs.
         for image_id in retry_ids:
             try:
                 enqueue_image(image_id, delay=10)
@@ -353,7 +466,8 @@ def recover_stale_jobs() -> dict:
 
             except Exception:
                 logger.exception(
-                    "Could not enqueue recovered job %s.", image_id
+                    "Could not enqueue recovered job %s.",
+                    image_id,
                 )
 
                 _mark_failed(
@@ -370,7 +484,11 @@ def recover_stale_jobs() -> dict:
             "jobs_failed": failed_count,
         }
 
-        logger.info("Stale-job recovery completed: %s", summary)
+        logger.info(
+            "Stale-job recovery completed: %s",
+            summary,
+        )
+
         return summary
 
     except Exception:
