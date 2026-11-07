@@ -18,3 +18,5 @@ data/uploads/*
 .streamlit/secrets.toml
 .DS_Store
 Thumbs.db
+
+gogig-lens-review.zip
