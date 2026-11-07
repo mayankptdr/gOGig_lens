@@ -1,13 +1,46 @@
+
 import os
 from pathlib import Path
+
 
 class Settings:
     database_url = os.getenv(
         "DATABASE_URL",
         "postgresql+psycopg://pipeline:pipeline@localhost:5432/media_pipeline",
     )
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    upload_dir = Path(os.getenv("UPLOAD_DIR", "data/uploads"))
-    max_upload_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+
+    redis_url = os.getenv(
+        "REDIS_URL",
+        "redis://localhost:6379/0",
+    )
+
+    upload_dir = Path(
+        os.getenv("UPLOAD_DIR", "data/uploads")
+    ).expanduser().resolve()
+
+    max_upload_bytes = int(
+        os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    )
+
+    max_image_pixels = int(
+        os.getenv("MAX_IMAGE_PIXELS", "50000000")
+    )
+
+    analysis_max_edge = int(
+        os.getenv("ANALYSIS_MAX_EDGE", "1280")
+    )
+
+    max_attempts = int(
+        os.getenv("MAX_ATTEMPTS", "3")
+    )
+
+    job_timeout_seconds = int(
+        os.getenv("JOB_TIMEOUT_SECONDS", "300")
+    )
+
+    stale_processing_grace_seconds = int(
+        os.getenv("STALE_PROCESSING_GRACE_SECONDS", "60")
+    )
+
 
 settings = Settings()
