@@ -1,101 +1,345 @@
-# Intelligent Media Processing Pipeline
+# gOGig Lens
+### Intelligent Image Processing & Quality Screening Platform
 
-Asynchronous vehicle-image screening API built with FastAPI, PostgreSQL, Redis/RQ and OpenCV.
+<p align="center">
+  <img src="img/onboard.png" width="90%" alt="gOGig Lens — Onboarding Experience">
+</p>
+
+<p align="center">
+  <b>01 — Onboarding Experience</b>
+</p>
+
+<br/>
+
+<p align="center">
+  <img src="img/summary.png" width="90%" alt="gOGig Lens — Analysis Summary">
+</p>
+
+<p align="center">
+  <b>02 — Analysis Summary</b>
+</p>
+
+<br/>
+
+<p align="center">
+  <img src="img/timeline.png" width="90%" alt="gOGig Lens — Processing Timeline">
+</p>
+
+<p align="center">
+  <b>03 — Processing Timeline</b>
+</p>
+
+---
+
+<p align="center">
+  <b>Python · FastAPI · PostgreSQL · Redis · RQ · OpenCV · Streamlit · Docker</b>
+</p>
+
+## Overview
+
+**gOGig Lens** is an image upload and analysis platform developed for the Ginger Media Group Backend + AI Engineering take-home assignment.
+
+It is designed around an asynchronous image-processing pipeline that separates API request handling from background analysis.
+
+Users can submit images, receive a unique processing ID, track job status, and retrieve analysis results through REST APIs and an interactive Streamlit dashboard.
+
+The primary engineering focus is modular backend architecture, asynchronous processing, persistent metadata, and practical image-quality screening.
 
 ## Features
-- Image upload with format and size validation
-- UUID processing ID and metadata persistence
-- Redis/RQ background processing
-- Status and results endpoints
-- Blur, brightness, dimensions and perceptual-hash checks
-- Explicit uncertainty and limitations in results
-- Docker Compose setup and a starter unit test
 
-## Architecture
-1. API validates the image and stores it in shared local storage.
-2. API persists metadata with `pending` status in PostgreSQL.
-3. API enqueues the image ID in Redis/RQ and returns HTTP 202.
-4. Worker loads the record, marks it `processing`, runs image checks, then stores structured results and marks it `completed`.
-5. Clients poll status and fetch results from the API.
+- REST API for image uploads.
+- Unique processing ID generation.
+- Image validation and storage.
+- Asynchronous background processing with Redis Queue (RQ).
+- PostgreSQL-based metadata persistence.
+- Processing states: `pending`, `processing`, `completed`, `failed`.
+- Image quality and metadata analysis.
+- Processing status and results endpoints.
+- Interactive Streamlit dashboard.
+- Docker and Docker Compose configuration.
+- Configurable local and Cloudflare R2 object storage.
 
-The API and worker share the upload volume. For production, replace local storage with object storage and use a transactional outbox to avoid the database/queue dual-write gap.
+## Image Analysis Capabilities
 
-## Run with Docker
-```bash
-docker compose up --build
+The pipeline includes or explores the following image checks:
+
+| Analysis | Description |
+|---|---|
+| Blur Detection | Estimates image sharpness using image-processing techniques. |
+| Brightness Analysis | Evaluates image brightness and low-light conditions. |
+| Dimension Validation | Checks image width, height, and dimensions. |
+| Duplicate Detection | Compares image fingerprints to identify potential duplicates. |
+| OCR Extraction | Provides text-extraction functionality. |
+| Number Plate Analysis | Includes analysis of Indian vehicle registration formats. |
+
+**Note:** These checks are intended for automated screening assistance. They do not guarantee image authenticity. OCR and number-plate recognition have limitations and require further validation before production use.
+
+## System Architecture
+
+```mermaid
+flowchart TD
+    A[User / Streamlit Dashboard] --> B[FastAPI Backend]
+    B --> C[Image Validation]
+    C --> D[Image Storage]
+    B --> E[(PostgreSQL)]
+    B --> F[Redis Queue]
+    F --> G[RQ Background Worker]
+    G --> H[OpenCV Image Analysis]
+    G --> E
+    H --> I[Analysis Results]
+    I --> E
+    A --> J[Status / Results API]
+    J --> E
 ```
-Open Swagger UI at http://localhost:8000/docs.
 
-## Run locally (Windows PowerShell)
-Start PostgreSQL and Redis first, then:
+### Processing Workflow
+
+1. **Upload:** The user submits an image through the dashboard or API.
+2. **Validation:** FastAPI validates the uploaded image.
+3. **Identification:** A unique processing ID is generated.
+4. **Persistence:** Image metadata and processing information are stored in PostgreSQL.
+5. **Queueing:** A background job is submitted to Redis Queue.
+6. **Processing:** An RQ worker performs image analysis independently of the API request.
+7. **Results:** The analysis output and job status are persisted.
+8. **Retrieval:** The client retrieves processing status and results through the API.
+
+### Queue Strategy
+
+Redis Queue (RQ) is used to separate image processing from API request handling.
+
+The API can acknowledge a valid upload without waiting for the complete analysis. The worker processes queued jobs independently, allowing the application to handle longer-running tasks outside the request-response lifecycle.
+
+## Technology Stack
+
+| Technology | Purpose |
+|---|---|
+| Python | Application and processing logic |
+| FastAPI | REST API development |
+| PostgreSQL | Persistent metadata storage |
+| Redis | Queue infrastructure |
+| RQ | Background job processing |
+| OpenCV | Image analysis |
+| Streamlit | Interactive dashboard |
+| Cloudflare R2 | Configurable object storage |
+| Docker | Containerization |
+| Docker Compose | Local service orchestration |
+| Render | Backend hosting |
+| GitHub | Version control and source code |
+
+## Project Structure
+
+```text
+gOGig_lens/
+│
+├── app/
+│   ├── queue.py
+│   ├── reaper.py
+│   ├── schemas.py
+│   ├── storage.py
+│   └── worker.py
+│
+├── data/
+│
+├── img/
+│   ├── onboard.png
+│   ├── summary.png
+│   └── timeline.png
+│
+├── tests/
+│
+├── .env.example
+├── .gitignore
+├── alembic.ini
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── streamlit_app.py
+└── README.md
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11
+- Docker and Docker Compose
+- Git
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/mayankptdr/gOGig_lens.git
+cd gOGig_lens
+```
+
+### 2. Create a virtual environment
+
+```bash
+python -m venv .venv
+```
+
+Activate the environment:
+
+**Windows PowerShell**
 ```powershell
-py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
+```
+
+**Linux / WSL**
+```bash
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
-Copy-Item .env.example .env
-uvicorn app.main:app --reload
-```
-In a second terminal:
-```powershell
-.venv\Scripts\Activate.ps1
-rq worker image-processing --url redis://localhost:6379/0
 ```
 
-## API
-### Upload
+### 4. Configure environment variables
+
+Create a `.env` file using `.env.example` as a reference.
+
+Configure the required database, Redis, storage, and application settings.
+
+Example configuration keys:
+
+```env
+DATABASE_URL=
+REDIS_URL=
+UPLOAD_DIR=data/uploads
+STORAGE_BACKEND=local
+
+R2_BUCKET_NAME=
+R2_ENDPOINT_URL=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_REGION=auto
+```
+
+Do not commit `.env` files or credentials to GitHub.
+
+### 5. Start supporting services
+
 ```bash
-curl -X POST "http://localhost:8000/api/v1/images/upload" -F "file=@vehicle.jpg"
+docker compose up -d
 ```
-Returns `202 Accepted` with `processing_id`.
 
-### Status
+### 6. Start the FastAPI backend
+
 ```bash
-curl "http://localhost:8000/api/v1/images/{processing_id}/status"
+python -m uvicorn app.main:app --reload
 ```
 
-### Results
+### 7. Start the background worker
+
+Run the worker in a separate terminal with the same Redis and database configuration as the API:
+
 ```bash
-curl "http://localhost:8000/api/v1/images/{processing_id}/results"
+rq worker --with-scheduler image-processing --url "$REDIS_URL"
 ```
 
-## Status lifecycle
-`pending -> processing -> completed | failed`
+### 8. Start the Streamlit dashboard
 
-## Checks and uncertainty
-- Blur: Laplacian variance heuristic.
-- Brightness: mean grayscale intensity heuristic.
-- Dimensions: minimum 300x300.
-- Duplicate fingerprint: pHash is generated. Cross-upload duplicate matching is a next implementation step.
-- OCR and plate format: documented placeholders until an OCR engine is configured.
-
-Do not interpret the screening score as a probability of fraud or image authenticity.
-
-## Trade-offs and next steps
-- Local disk storage is suitable for a take-home demo; use S3-compatible object storage in production.
-- Add persistent pHash indexing and Hamming-distance duplicate lookup.
-- Add OCR (Tesseract/EasyOCR) and normalize plate strings before regex validation.
-- Improve retry semantics with attempt tracking and only mark failed after the final retry.
-- Add DB migrations (Alembic), authentication, rate limiting and file-retention policies.
-- Add transactional outbox to ensure queued jobs are not lost between DB commit and Redis enqueue.
-- Calibrate thresholds against labelled vehicle images.
-
-## AI usage disclosure
-Complete this section truthfully before submission:
-- AI tools used:
-- What AI helped with:
-- Suggestions rejected or corrected:
-- How generated code was validated (tests, manual API checks, edge cases):
-
-## Assumptions
-- Inputs are JPEG, PNG or WEBP images up to 10 MB.
-- The system is a screening aid, not a fraud verdict.
-- Vehicle plate OCR depends on adding and configuring an OCR engine.
-
-
-## Streamlit frontend
-Run the dashboard in a second terminal while the API and worker are running:
-```powershell
+```bash
 streamlit run streamlit_app.py
 ```
-Set `API_BASE_URL` if the FastAPI backend is not at `http://localhost:8000`.
-The UI provides an overview, image upload, automatic status polling, and processing/result lookup.
+
+The dashboard will normally be available at:
+
+```text
+http://localhost:8501
+```
+
+## API Documentation
+
+The FastAPI backend provides interactive API documentation through Swagger UI.
+
+**[Open gOGig Lens API Documentation](https://gogig-lens-api.onrender.com/docs)**
+
+The API supports image submission and processing status/results retrieval. Refer to the live Swagger documentation for the currently exposed endpoint schemas and request formats.
+
+## Deployment
+
+The project has been configured across multiple services:
+
+| Component | Platform | Status |
+|---|---|---|
+| Source Code | GitHub | Available |
+| FastAPI Backend | Render | Deployed |
+| PostgreSQL | Render | Configured |
+| Redis | Render | Configured |
+| Dashboard | Streamlit Community Cloud | Deployed |
+| Object Storage | Cloudflare R2 | Configured |
+| Cloud Worker Integration | Cloud Environment | Requires further verification |
+
+### Deployment Limitation
+
+The dashboard and backend are deployed separately. During final integration, a connectivity issue affected the complete cloud-based image-processing workflow.
+
+The local processing pipeline has been used for the working demonstration. A fully reliable, always-on cloud worker integration is still pending.
+
+The public dashboard should therefore not be interpreted as proof that the entire cloud processing workflow is currently operational.
+
+## Trade-offs and Known Limitations
+
+Some implementation decisions were kept intentionally practical to fit the assignment scope.
+
+- Image checks rely on traditional image-processing techniques and heuristics rather than a fully trained image-authenticity model.
+- OCR and number-plate analysis need further accuracy testing.
+- Duplicate detection can require better fingerprinting and threshold calibration.
+- The confidence indicator is a screening summary, not a calibrated probability.
+- Worker reliability, retry behavior, and failure recovery need further hardening.
+- Authentication, authorization, and rate limiting are not yet complete.
+- Large-image processing requires additional memory and performance controls.
+- Cloud worker connectivity requires further integration testing.
+
+## AI Usage Disclosure
+
+AI tools were used as development assistance during the project.
+
+### Where AI Was Used
+
+- Exploring backend architecture and implementation approaches.
+- Understanding image-processing techniques and possible validation checks.
+- Debugging Python, API, and dependency issues.
+- Reviewing code structure and improving documentation.
+- Investigating deployment and infrastructure configuration.
+
+### How AI Output Was Validated
+
+AI-generated suggestions were treated as recommendations rather than automatically correct solutions.
+
+Code and configuration were reviewed against the actual project, and relevant changes were checked through local execution, API testing, and debugging.
+
+### What Did Not Work as Expected
+
+Some generated implementation and deployment suggestions required correction during integration.
+
+In particular, connecting separately hosted dashboard, backend, Redis, and background worker services exposed configuration and connectivity issues. These were investigated through logs and local testing.
+
+This reinforced the importance of validating generated code and infrastructure changes in the actual execution environment.
+
+## Future Improvements
+
+- Reliable always-on background worker deployment.
+- Stronger OCR and number-plate recognition.
+- More robust duplicate detection.
+- Improved retry and failure-recovery mechanisms.
+- Automated integration and load testing.
+- Authentication and access control.
+- Structured logging and operational monitoring.
+- Performance optimization for large images.
+
+## Repository
+
+**GitHub:** [github.com/mayankptdr/gOGig_lens](https://github.com/mayankptdr/gOGig_lens)
+
+**API Documentation:** [gogig-lens-api.onrender.com/docs](https://gogig-lens-api.onrender.com/docs)
+
+---
+
+<p align="center">
+  <b>gOGig Lens</b><br>
+  Built by Mayank Patidar
+</p>
