@@ -1,3 +1,4 @@
+
 .git/
 .github/
 .vscode/
@@ -10,9 +11,11 @@
 venv/
 env/
 __pycache__/
+**/__pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
 data/uploads/
 *.db
@@ -20,5 +23,5 @@ data/uploads/
 
 gogig-lens-review.zip
 
-.DS_Store
-Thumbs.db
+README.md
+tests/

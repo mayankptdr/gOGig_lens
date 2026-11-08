@@ -8,7 +8,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.errors import PermanentProcessingError
 from app.models import ImageRecord
-from app.storage import get_storage_path
+from app.storage import download_storage_file
 from app.analyzer import analyze_image
 from app.queue import enqueue_image
 
@@ -233,14 +233,15 @@ def process_image(image_id: str):
             logger.error("Image record %s does not exist.", image_id)
             return
 
-        # 2. Resolve stored image safely.
-        image_path = get_storage_path(record.storage_key)
+        # 2. Materialize the stored image locally for analysis.
+        # For R2 this downloads to a temporary file; for local storage
+        # it yields the existing validated file path.
+        with download_storage_file(record.storage_key) as image_path:
+            if not image_path.is_file():
+                raise PermanentProcessingError("file_missing")
 
-        if not image_path.is_file():
-            raise PermanentProcessingError("file_missing")
-
-        # 3. Analyze image.
-        analysis_result = analyze_image(str(image_path))
+            # 3. Analyze image while the temporary file is available.
+            analysis_result = analyze_image(str(image_path))
 
         # 4. Compare duplicate fingerprints.
         _compare_duplicates(db, image_id, analysis_result)

@@ -10,7 +10,7 @@ from app.database import SessionLocal
 from app.errors import UploadRejected
 from app.models import ImageRecord
 from app.schemas import UploadResponse, StatusResponse, AnalysisResponse
-from app.storage import save_upload, get_storage_path
+from app.storage import save_upload, delete_storage_object
 from app.queue import enqueue_image
 
 
@@ -19,12 +19,7 @@ class RequestBodyTooLarge(Exception):
 
 
 class UploadBodyLimitMiddleware:
-    """
-    Enforce upload request size before FastAPI parses multipart data.
-
-    This protects against oversized multipart requests that would
-    otherwise be parsed before the upload endpoint executes.
-    """
+    """Enforce upload request size before FastAPI parses multipart data."""
 
     def __init__(self, app, max_bytes: int):
         self.app = app
@@ -36,23 +31,17 @@ class UploadBodyLimitMiddleware:
             and scope.get("method") == "POST"
             and scope.get("path") == "/api/v1/images/upload"
         )
-
         if not is_upload_request:
             await self.app(scope, receive, send)
             return
 
         headers = dict(scope.get("headers", []))
         content_length = headers.get(b"content-length")
-
-        # Reject oversized requests immediately when Content-Length exists.
         if content_length:
             try:
-                declared_size = int(content_length)
-
-                if declared_size > self.max_bytes:
+                if int(content_length) > self.max_bytes:
                     await self._send_too_large(send)
                     return
-
             except ValueError:
                 pass
 
@@ -60,20 +49,15 @@ class UploadBodyLimitMiddleware:
 
         async def limited_receive():
             nonlocal received_bytes
-
             message = await receive()
-
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
-
                 if received_bytes > self.max_bytes:
                     raise RequestBodyTooLarge()
-
             return message
 
         try:
             await self.app(scope, limited_receive, send)
-
         except RequestBodyTooLarge:
             await self._send_too_large(send)
 
@@ -84,7 +68,6 @@ class UploadBodyLimitMiddleware:
                 "message": "Upload request exceeds the maximum allowed size.",
             }
         }).encode("utf-8")
-
         await send({
             "type": "http.response.start",
             "status": 413,
@@ -93,11 +76,7 @@ class UploadBodyLimitMiddleware:
                 (b"content-length", str(len(body)).encode("ascii")),
             ],
         })
-
-        await send({
-            "type": "http.response.body",
-            "body": body,
-        })
+        await send({"type": "http.response.body", "body": body})
 
 
 @asynccontextmanager
@@ -131,34 +110,20 @@ def health():
 )
 def upload_image(file: UploadFile = File(...)):
     image_id = str(uuid4())
-    storage_key = None
 
     try:
-        # 1. Validate and save the uploaded image.
         try:
             storage_key, file_size = save_upload(file, image_id)
-
         except UploadRejected as exc:
             raise HTTPException(
                 status_code=exc.http_status,
-                detail={
-                    "code": exc.code,
-                    "message": exc.message,
-                },
+                detail={"code": exc.code, "message": exc.message},
             )
 
-        # 2. Persist upload metadata.
         db = SessionLocal()
-
         try:
-            # Treat the supplied filename as untrusted metadata.
-            supplied_filename = (
-                (file.filename or "upload")
-                .replace("\\", "/")
-            )
-
+            supplied_filename = (file.filename or "upload").replace("\\", "/")
             safe_filename = Path(supplied_filename).name[:255]
-
             record = ImageRecord(
                 id=image_id,
                 original_filename=safe_filename,
@@ -167,50 +132,36 @@ def upload_image(file: UploadFile = File(...)):
                 file_size=file_size,
                 status="pending",
             )
-
             db.add(record)
             db.commit()
-
         except Exception:
             db.rollback()
-
             try:
-                get_storage_path(storage_key).unlink(missing_ok=True)
-            except (ValueError, OSError):
+                delete_storage_object(storage_key)
+            except Exception:
                 pass
-
             raise HTTPException(
                 status_code=500,
                 detail="Could not persist upload metadata.",
             )
-
         finally:
             db.close()
 
-        # 3. Enqueue asynchronous processing.
         try:
             enqueue_image(image_id)
-
         except Exception:
             db = SessionLocal()
-
             try:
                 record = db.get(ImageRecord, image_id)
-
                 if record:
                     record.status = "failed"
                     record.error_code = "analysis_error"
-                    record.error_message = (
-                        "Image was stored but could not be queued."
-                    )
+                    record.error_message = "Image was stored but could not be queued."
                     db.commit()
-
             except Exception:
                 db.rollback()
-
             finally:
                 db.close()
-
             raise HTTPException(
                 status_code=503,
                 detail="Image was stored but could not be queued.",
@@ -221,9 +172,7 @@ def upload_image(file: UploadFile = File(...)):
             status="pending",
             message="Image accepted for asynchronous processing.",
         )
-
     finally:
-        # Close the uploaded temporary file regardless of outcome.
         file.file.close()
 
 
@@ -233,16 +182,10 @@ def upload_image(file: UploadFile = File(...)):
 )
 def get_status(image_id: str):
     db = SessionLocal()
-
     try:
         record = db.get(ImageRecord, image_id)
-
         if not record:
-            raise HTTPException(
-                status_code=404,
-                detail="Processing ID not found.",
-            )
-
+            raise HTTPException(status_code=404, detail="Processing ID not found.")
         return StatusResponse(
             processing_id=record.id,
             status=record.status,
@@ -255,7 +198,6 @@ def get_status(image_id: str):
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
-
     finally:
         db.close()
 
@@ -266,16 +208,10 @@ def get_status(image_id: str):
 )
 def get_results(image_id: str):
     db = SessionLocal()
-
     try:
         record = db.get(ImageRecord, image_id)
-
         if not record:
-            raise HTTPException(
-                status_code=404,
-                detail="Processing ID not found.",
-            )
-
+            raise HTTPException(status_code=404, detail="Processing ID not found.")
         return AnalysisResponse(
             processing_id=record.id,
             status=record.status,
@@ -283,6 +219,5 @@ def get_results(image_id: str):
             error=record.error_message,
             error_code=record.error_code,
         )
-
     finally:
         db.close()

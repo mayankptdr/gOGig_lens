@@ -29,6 +29,8 @@ services:
     restart: unless-stopped
 
   api:
+    env_file:
+      - .env
     build: .
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
@@ -53,6 +55,8 @@ services:
     restart: unless-stopped
 
   worker:
+    env_file:
+      - .env
     build: .
     command: rq worker --with-scheduler image-processing --url redis://redis:6379/0
     environment:
@@ -75,6 +79,8 @@ services:
     restart: unless-stopped
 
   reaper:
+    env_file:
+      - .env
     build: .
     command: python -m app.reaper
     environment:
