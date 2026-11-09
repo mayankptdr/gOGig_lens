@@ -1220,6 +1220,22 @@ with upload_col:
             use_container_width=True,
         )
 
+        st.markdown(
+            """
+            <p style="
+                text-align: center;
+                color: #ffb16f;
+                font-size: 12px;
+                margin-top: -8px;
+                font-style: italic;
+            ">
+                ⏳ Wait 10 seconds… good things take time.
+                Even AI needs a coffee break! ☕🤖
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+
 with preview_col:
     if uploaded:
         # Fixed 16:9 thumbnail keeps portrait uploads from stretching the page.
