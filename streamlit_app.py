@@ -22,7 +22,7 @@ API_BASE = os.getenv(
 
 
 POLL_INTERVAL = 2
-MAX_POLL_ATTEMPTS = 30
+MAX_POLL_ATTEMPTS = 450
 
 # Use the official white-on-transparent gOGig mark as the browser favicon.
 FAVICON_PATH = Path(__file__).with_name("gogig_logo_dark.png")
@@ -33,20 +33,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# TEMPORARY BACKEND CONNECTION TEST
-st.write("API URL:", API_BASE)
-
-try:
-    response = requests.get(
-        f"{API_BASE}/health",
-        timeout=15
-    )
-
-    st.write("API Status:", response.status_code)
-    st.write("API Response:", response.text)
-
-except requests.RequestException as e:
-    st.error(f"Backend connection failed: {e}")
 
 
 # --------------------------------------------------
@@ -1204,10 +1190,18 @@ with upload_col:
             "JPG · JPEG · PNG · WEBP  /  File and image limits are validated by the API."
         )
 
+        is_processing = (
+        st.session_state.processing_id is not None
+        and st.session_state.processing_status in (
+            "pending",
+            "processing"
+        )
+    )
+
     analyze_clicked = st.button(
         "Run image analysis  →",
         type="primary",
-        disabled=uploaded is None,
+        disabled=uploaded is None or is_processing,
         use_container_width=True,
     )
 
@@ -1250,6 +1244,7 @@ with preview_col:
 
 if analyze_clicked and uploaded:
 
+    # Reset state only when starting a genuinely new upload.
     for key, value in DEFAULT_STATE.items():
         st.session_state[key] = value
 
@@ -1259,8 +1254,10 @@ if analyze_clicked and uploaded:
 
         if response.status_code != 202:
             st.session_state.upload_error = get_error(response)
+
         else:
             payload = response.json()
+
             st.session_state.processing_id = payload["processing_id"]
             st.session_state.processing_status = payload["status"]
             st.session_state.uploaded_filename = uploaded.name
@@ -1272,10 +1269,13 @@ if analyze_clicked and uploaded:
     except (ValueError, KeyError) as exc:
         st.session_state.upload_error = str(exc)
 
+
 if st.session_state.upload_error:
     st.error(st.session_state.upload_error)
 
-
+# --------------------------------------------------
+# PROCESSING TIMELINE
+# --------------------------------------------------
 
 # --------------------------------------------------
 # PROCESSING TIMELINE
@@ -1283,25 +1283,39 @@ if st.session_state.upload_error:
 
 if st.session_state.processing_id:
 
-    st.markdown('<div class="eyebrow">02 / LIVE WORKFLOW</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Processing progress</div>', unsafe_allow_html=True)
-    st.caption(f"Job ID · {st.session_state.processing_id}")
+    st.markdown(
+        '<div class="eyebrow">02 / LIVE WORKFLOW</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        '<div class="section-title">Processing progress</div>',
+        unsafe_allow_html=True
+    )
+
+    st.caption(
+        f"Job ID · {st.session_state.processing_id}"
+    )
 
     render_timeline(
         st.session_state.processing_status or "pending"
     )
 
+    # --------------------------------------------------
+    # AUTOMATIC POLLING
+    # --------------------------------------------------
+
     if st.session_state.should_poll:
 
-        # Persistent browser-side animation while the backend job is being polled.
-        # This HTML is rendered once, so Streamlit reruns do not restart the spinner.
         working_indicator = st.empty()
+
         working_indicator.markdown(
             """
             <div class="gogig-working">
                 <span class="gogig-working-orbit"></span>
                 <span class="gogig-working-copy">
-                    gOGig is working<span class="gogig-working-dots"></span>
+                    gOGig is working
+                    <span class="gogig-working-dots"></span>
                 </span>
                 <span style="color:#91a0b1;font-weight:400;">
                     Validating and analyzing your image
@@ -1312,37 +1326,72 @@ if st.session_state.processing_id:
         )
 
         polling_error = None
+        job_finished = False
 
-        for _ in range(MAX_POLL_ATTEMPTS):
+        for attempt in range(MAX_POLL_ATTEMPTS):
+
             try:
                 status_data = refresh_processing(
                     st.session_state.processing_id
                 )
-                if status_data["status"] in ("completed", "failed"):
+
+                current_status = status_data["status"]
+
+                if current_status in ("completed", "failed"):
+                    job_finished = True
                     break
-            except (requests.RequestException, RuntimeError) as exc:
+
+            except (
+                requests.RequestException,
+                RuntimeError
+            ) as exc:
+
                 polling_error = str(exc)
                 break
 
             time.sleep(POLL_INTERVAL)
 
-        st.session_state.should_poll = False
         working_indicator.empty()
 
         if polling_error:
+
             st.session_state.upload_error = polling_error
+            st.session_state.should_poll = False
+
+        elif job_finished:
+
+            st.session_state.should_poll = False
+
+        else:
+
+            # Do not lose the current job when polling reaches
+            # its automatic time limit.
+            st.session_state.should_poll = False
 
         st.rerun()
 
-    if st.session_state.processing_status in ("pending", "processing"):
-        if st.button("Refresh status", use_container_width=False):
-            try:
-                refresh_processing(st.session_state.processing_id)
-                st.rerun()
-            except (requests.RequestException, RuntimeError) as exc:
-                st.error(str(exc))
+    # --------------------------------------------------
+    # MANUAL REFRESH FOR EXISTING JOB
+    # --------------------------------------------------
 
+    if st.session_state.processing_status in (
+        "pending",
+        "processing"
+    ):
 
+        st.info(
+            "Your image is still being processed. "
+            "You can check the existing job without uploading again."
+        )
+
+        if st.button(
+            "Refresh status ↻",
+            key="refresh_existing_job",
+            use_container_width=False
+        ):
+
+            st.session_state.should_poll = True
+            st.rerun()
 
 # --------------------------------------------------
 # RESULTS SECTION
