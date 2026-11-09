@@ -712,6 +712,7 @@ def get_error(response):
         return response.text
 
 
+
 def refresh_processing(image_id):
 
     response = api_get(
@@ -728,21 +729,42 @@ def refresh_processing(image_id):
 
     if data["status"] == "completed":
 
-        result_response = api_get(
-            f"/api/v1/images/{image_id}/results"
-        )
+        last_error = "Analysis result is not available yet."
 
-        if not result_response.ok:
-            raise RuntimeError(get_error(result_response))
+        # Fetch results at most twice, with a 2-second gap.
+        for attempt in range(2):
 
-        st.session_state.analysis = (
-            result_response.json().get("analysis")
-        )
+            try:
+                result_response = api_get(
+                    f"/api/v1/images/{image_id}/results"
+                )
+
+                if result_response.ok:
+                    result_data = result_response.json()
+                    analysis = result_data.get("analysis")
+
+                    if isinstance(analysis, dict):
+                        st.session_state.analysis = analysis
+                        return data
+
+                    last_error = "Analysis data is not ready yet."
+
+                else:
+                    last_error = get_error(result_response)
+
+            except requests.RequestException as exc:
+                last_error = str(exc)
+
+            if attempt == 0:
+                time.sleep(2)
+
+        raise RuntimeError(last_error)
 
     elif data["status"] == "failed":
         st.session_state.analysis = None
 
     return data
+
 
 
 def format_file_size(size):
