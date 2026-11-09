@@ -1229,8 +1229,7 @@ with upload_col:
                 margin-top: -8px;
                 font-style: italic;
             ">
-                ⏳ Wait 10 seconds… good things take time.
-                Even AI needs a coffee break! ☕🤖
+                Wait 10 seconds… then click again. Magic takes time! ✨ 😂
             </p>
             """,
             unsafe_allow_html=True,
