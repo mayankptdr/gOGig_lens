@@ -1,4 +1,6 @@
+
 import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +14,9 @@ from app.models import ImageRecord
 from app.schemas import UploadResponse, StatusResponse, AnalysisResponse
 from app.storage import save_upload, delete_storage_object
 from app.queue import enqueue_image
+
+
+logger = logging.getLogger("gogig_lens.api")
 
 
 class RequestBodyTooLarge(Exception):
@@ -31,12 +36,14 @@ class UploadBodyLimitMiddleware:
             and scope.get("method") == "POST"
             and scope.get("path") == "/api/v1/images/upload"
         )
+
         if not is_upload_request:
             await self.app(scope, receive, send)
             return
 
         headers = dict(scope.get("headers", []))
         content_length = headers.get(b"content-length")
+
         if content_length:
             try:
                 if int(content_length) > self.max_bytes:
@@ -49,15 +56,20 @@ class UploadBodyLimitMiddleware:
 
         async def limited_receive():
             nonlocal received_bytes
+
             message = await receive()
+
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
+
                 if received_bytes > self.max_bytes:
                     raise RequestBodyTooLarge()
+
             return message
 
         try:
             await self.app(scope, limited_receive, send)
+
         except RequestBodyTooLarge:
             await self._send_too_large(send)
 
@@ -68,6 +80,7 @@ class UploadBodyLimitMiddleware:
                 "message": "Upload request exceeds the maximum allowed size.",
             }
         }).encode("utf-8")
+
         await send({
             "type": "http.response.start",
             "status": 413,
@@ -76,13 +89,19 @@ class UploadBodyLimitMiddleware:
                 (b"content-length", str(len(body)).encode("ascii")),
             ],
         })
-        await send({"type": "http.response.body", "body": body})
+
+        await send({
+            "type": "http.response.body",
+            "body": body,
+        })
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("GOGIG LENS API STARTED")
     yield
+    logger.info("GOGIG LENS API SHUTTING DOWN")
 
 
 app = FastAPI(
@@ -111,67 +130,172 @@ def health():
 def upload_image(file: UploadFile = File(...)):
     image_id = str(uuid4())
 
+    logger.info(
+        "UPLOAD REQUEST RECEIVED | image_id=%s | filename=%s",
+        image_id,
+        file.filename,
+    )
+
+    storage_key = None
+
     try:
+        # Step 1: Store uploaded image
         try:
             storage_key, file_size = save_upload(file, image_id)
-        except UploadRejected as exc:
-            raise HTTPException(
-                status_code=exc.http_status,
-                detail={"code": exc.code, "message": exc.message},
+
+            logger.info(
+                "UPLOAD STORAGE SUCCESS | image_id=%s | size=%s",
+                image_id,
+                file_size,
             )
 
+        except UploadRejected as exc:
+            logger.warning(
+                "UPLOAD REJECTED | image_id=%s | error=%s",
+                image_id,
+                exc,
+            )
+
+            raise HTTPException(
+                status_code=exc.http_status,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                },
+            )
+
+        # Step 2: Save image metadata in database
         db = SessionLocal()
+
         try:
-            supplied_filename = (file.filename or "upload").replace("\\", "/")
+            supplied_filename = (
+                file.filename or "upload"
+            ).replace("\\", "/")
+
             safe_filename = Path(supplied_filename).name[:255]
+
             record = ImageRecord(
                 id=image_id,
                 original_filename=safe_filename,
-                content_type=file.content_type or "application/octet-stream",
+                content_type=(
+                    file.content_type or "application/octet-stream"
+                ),
                 storage_key=storage_key,
                 file_size=file_size,
                 status="pending",
             )
+
             db.add(record)
             db.commit()
+
+            logger.info(
+                "UPLOAD DATABASE SUCCESS | image_id=%s",
+                image_id,
+            )
+
         except Exception:
             db.rollback()
+
+            logger.exception(
+                "UPLOAD DATABASE FAILED | image_id=%s",
+                image_id,
+            )
+
             try:
                 delete_storage_object(storage_key)
             except Exception:
-                pass
+                logger.exception(
+                    "UPLOAD STORAGE CLEANUP FAILED | image_id=%s",
+                    image_id,
+                )
+
             raise HTTPException(
                 status_code=500,
                 detail="Could not persist upload metadata.",
             )
+
         finally:
             db.close()
 
+        # Step 3: Enqueue image processing job
         try:
-            enqueue_image(image_id)
-        except Exception:
+            logger.info(
+                "UPLOAD ENQUEUE START | image_id=%s",
+                image_id,
+            )
+
+            job = enqueue_image(image_id)
+
+            logger.info(
+                "UPLOAD ENQUEUED | image_id=%s | job_id=%s | job_status=%s",
+                image_id,
+                job.id,
+                job.get_status(refresh=True),
+            )
+
+        except Exception as exc:
+            logger.exception(
+                "UPLOAD ENQUEUE FAILED | image_id=%s | error=%r",
+                image_id,
+                exc,
+            )
+
             db = SessionLocal()
+
             try:
                 record = db.get(ImageRecord, image_id)
+
                 if record:
                     record.status = "failed"
                     record.error_code = "analysis_error"
-                    record.error_message = "Image was stored but could not be queued."
+                    record.error_message = (
+                        "Image was stored but could not be queued."
+                    )
+
                     db.commit()
+
             except Exception:
                 db.rollback()
+
+                logger.exception(
+                    "UPLOAD FAILURE STATUS UPDATE FAILED | image_id=%s",
+                    image_id,
+                )
+
             finally:
                 db.close()
+
             raise HTTPException(
                 status_code=503,
                 detail="Image was stored but could not be queued.",
             )
+
+        logger.info(
+            "UPLOAD REQUEST ACCEPTED | image_id=%s | job_id=%s",
+            image_id,
+            job.id,
+        )
 
         return UploadResponse(
             processing_id=image_id,
             status="pending",
             message="Image accepted for asynchronous processing.",
         )
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        logger.exception(
+            "UPLOAD UNEXPECTED ERROR | image_id=%s",
+            image_id,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while uploading image.",
+        )
+
     finally:
         file.file.close()
 
@@ -182,10 +306,16 @@ def upload_image(file: UploadFile = File(...)):
 )
 def get_status(image_id: str):
     db = SessionLocal()
+
     try:
         record = db.get(ImageRecord, image_id)
+
         if not record:
-            raise HTTPException(status_code=404, detail="Processing ID not found.")
+            raise HTTPException(
+                status_code=404,
+                detail="Processing ID not found.",
+            )
+
         return StatusResponse(
             processing_id=record.id,
             status=record.status,
@@ -198,6 +328,7 @@ def get_status(image_id: str):
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
+
     finally:
         db.close()
 
@@ -208,10 +339,16 @@ def get_status(image_id: str):
 )
 def get_results(image_id: str):
     db = SessionLocal()
+
     try:
         record = db.get(ImageRecord, image_id)
+
         if not record:
-            raise HTTPException(status_code=404, detail="Processing ID not found.")
+            raise HTTPException(
+                status_code=404,
+                detail="Processing ID not found.",
+            )
+
         return AnalysisResponse(
             processing_id=record.id,
             status=record.status,
@@ -219,5 +356,6 @@ def get_results(image_id: str):
             error=record.error_message,
             error_code=record.error_code,
         )
+
     finally:
         db.close()
