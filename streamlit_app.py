@@ -20,6 +20,7 @@ API_BASE = os.getenv(
     "http://localhost:8000",
 ).rstrip("/")
 
+
 POLL_INTERVAL = 2
 MAX_POLL_ATTEMPTS = 30
 
@@ -31,6 +32,21 @@ st.set_page_config(
     page_icon=str(FAVICON_PATH) if FAVICON_PATH.exists() else "🟠",
     layout="wide",
 )
+
+# TEMPORARY BACKEND CONNECTION TEST
+st.write("API URL:", API_BASE)
+
+try:
+    response = requests.get(
+        f"{API_BASE}/health",
+        timeout=15
+    )
+
+    st.write("API Status:", response.status_code)
+    st.write("API Response:", response.text)
+
+except requests.RequestException as e:
+    st.error(f"Backend connection failed: {e}")
 
 
 # --------------------------------------------------
@@ -679,7 +695,7 @@ def api_get(path):
 
 
 def api_upload(uploaded_file):
-    return requests.post(
+    response = requests.post(
         f"{API_BASE}/api/v1/images/upload",
         files={
             "file": (
@@ -691,6 +707,11 @@ def api_upload(uploaded_file):
         timeout=60,
     )
 
+    if not response.ok:
+        st.error(f"Upload failed: {response.status_code}")
+        st.code(response.text)
+
+    return response
 
 def get_error(response):
     try:
