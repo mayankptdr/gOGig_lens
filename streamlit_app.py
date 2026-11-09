@@ -1174,36 +1174,40 @@ st.markdown(
 upload_col, preview_col = st.columns([1.2, 0.8], gap="large")
 
 with upload_col:
-    uploaded = st.file_uploader(
-        "Select image",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=False,
-        label_visibility="collapsed",
-    )
-
-    if uploaded:
-        st.caption(
-            f"Selected: **{uploaded.name}** · {format_file_size(uploaded.size)}"
-        )
-    else:
-        st.caption(
-            "JPG · JPEG · PNG · WEBP  /  File and image limits are validated by the API."
+    with upload_col:
+        uploaded = st.file_uploader(
+            "Select image",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=False,
+            label_visibility="collapsed",
         )
 
+        if uploaded:
+            st.caption(
+                f"Selected: **{uploaded.name}** · "
+                f"{format_file_size(uploaded.size)}"
+            )
+        else:
+            st.caption(
+                "JPG · JPEG · PNG · WEBP / "
+                "File and image limits are validated by the API."
+            )
+
+        
         is_processing = (
-        st.session_state.processing_id is not None
-        and st.session_state.processing_status in (
-            "pending",
-            "processing"
+            st.session_state.processing_id is not None
+            and st.session_state.processing_status in (
+                "pending",
+                "processing",
+            )
         )
-    )
 
-    analyze_clicked = st.button(
-        "Run image analysis  →",
-        type="primary",
-        disabled=uploaded is None or is_processing,
-        use_container_width=True,
-    )
+        analyze_clicked = st.button(
+            "Run image analysis  →",
+            type="primary",
+            disabled=uploaded is None or is_processing,
+            use_container_width=True,
+        )
 
 with preview_col:
     if uploaded:
@@ -1273,13 +1277,10 @@ if analyze_clicked and uploaded:
 if st.session_state.upload_error:
     st.error(st.session_state.upload_error)
 
-# --------------------------------------------------
-# PROCESSING TIMELINE
-# --------------------------------------------------
 
-# --------------------------------------------------
+
 # PROCESSING TIMELINE
-# --------------------------------------------------
+
 
 if st.session_state.processing_id:
 
