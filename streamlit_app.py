@@ -723,44 +723,33 @@ def refresh_processing(image_id):
         raise RuntimeError(get_error(response))
 
     data = response.json()
+    current_status = data.get("status")
 
-    st.session_state.processing_status = data["status"]
+    st.session_state.processing_status = current_status
     st.session_state.status_data = data
 
-    if data["status"] == "completed":
+    if current_status == "completed":
+        # The status endpoint can report "completed" slightly before the
+        # results endpoint makes the analysis payload available. Try once
+        # per polling cycle instead of failing the whole job immediately.
+        try:
+            result_response = api_get(
+                f"/api/v1/images/{image_id}/results"
+            )
 
-        last_error = "Analysis result is not available yet."
+            if result_response.ok:
+                result_data = result_response.json()
+                analysis = result_data.get("analysis")
 
-        # Fetch results at most twice, with a 2-second gap.
-        for attempt in range(2):
+                if isinstance(analysis, dict):
+                    st.session_state.analysis = analysis
 
-            try:
-                result_response = api_get(
-                    f"/api/v1/images/{image_id}/results"
-                )
+        except (requests.RequestException, ValueError):
+            # A temporary results/API response issue is retried by the
+            # existing polling loop on its next cycle.
+            pass
 
-                if result_response.ok:
-                    result_data = result_response.json()
-                    analysis = result_data.get("analysis")
-
-                    if isinstance(analysis, dict):
-                        st.session_state.analysis = analysis
-                        return data
-
-                    last_error = "Analysis data is not ready yet."
-
-                else:
-                    last_error = get_error(result_response)
-
-            except requests.RequestException as exc:
-                last_error = str(exc)
-
-            if attempt == 0:
-                time.sleep(2)
-
-        raise RuntimeError(last_error)
-
-    elif data["status"] == "failed":
+    elif current_status == "failed":
         st.session_state.analysis = None
 
     return data
@@ -1358,9 +1347,18 @@ if st.session_state.processing_id:
                     st.session_state.processing_id
                 )
 
-                current_status = status_data["status"]
+                current_status = status_data.get("status")
 
-                if current_status in ("completed", "failed"):
+                # A completed status is not enough: wait until the actual
+                # analysis payload is available before stopping the poller.
+                if current_status == "failed":
+                    job_finished = True
+                    break
+
+                if (
+                    current_status == "completed"
+                    and isinstance(st.session_state.analysis, dict)
+                ):
                     job_finished = True
                     break
 
@@ -1397,15 +1395,24 @@ if st.session_state.processing_id:
     # MANUAL REFRESH FOR EXISTING JOB
     # --------------------------------------------------
 
-    if st.session_state.processing_status in (
-        "pending",
-        "processing"
+    if (
+        st.session_state.processing_status in ("pending", "processing")
+        or (
+            st.session_state.processing_status == "completed"
+            and not isinstance(st.session_state.analysis, dict)
+        )
     ):
 
-        st.info(
-            "Your image is still being processed. "
-            "You can check the existing job without uploading again."
-        )
+        if st.session_state.processing_status == "completed":
+            st.info(
+                "Processing is complete. The result is being prepared. "
+                "Refresh this existing job to retrieve it without uploading again."
+            )
+        else:
+            st.info(
+                "Your image is still being processed. "
+                "You can check the existing job without uploading again."
+            )
 
         if st.button(
             "Refresh status ↻",
