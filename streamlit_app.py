@@ -695,7 +695,7 @@ def api_get(path):
 
 
 def api_upload(uploaded_file):
-    return requests.post(
+    response = requests.post(
         f"{API_BASE}/api/v1/images/upload",
         files={
             "file": (
@@ -707,6 +707,11 @@ def api_upload(uploaded_file):
         timeout=60,
     )
 
+    if not response.ok:
+        st.error(f"Upload failed: {response.status_code}")
+        st.code(response.text)
+
+    return response
 
 def get_error(response):
     try:
